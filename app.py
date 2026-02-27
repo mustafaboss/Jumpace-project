@@ -297,11 +297,11 @@ def main():
                 <div class="crb-logo-circle">🏗️</div>
                 <div>
                   <div class="crb-app-name">Construction Rules OS</div>
-                  <div class="crb-app-sub">Daily co-pilot for code-compliant site decisions</div>
+                  <div class="crb-app-sub">MUTCD RAG chatbot</div>
                 </div>
               </div>
               <div class="crb-user-pill">
-                <span>Supervisor Mode</span>
+                <span>Jumpace AI chatbot</span>
                 <span class="crb-user-role">Live</span>
               </div>
             </div>
@@ -344,7 +344,7 @@ def main():
             """
             - Capture one scenario per query for precise rules.
             - Mention road type, land use (residential/commercial), and any special conditions.
-            - If the PDF has no matching rule, the assistant will say so instead of guessing.
+            - If the MUTCD has no matching rule, the assistant will say so instead of guessing.
             """,
         )
         st.markdown("</div>", unsafe_allow_html=True)
@@ -382,7 +382,7 @@ def main():
                 st.toast("Noted. We will review this scenario.", icon="⚠️")
 
     st.markdown(
-        "<div style='text-align: center; color: #888; font-size: 0.85rem;'>Answers are based only on uploaded PDF rules. Safety first.</div>",
+        "<div style='text-align: center; color: #888; font-size: 0.85rem;'>Answers are based only on uploaded MUTCD rules. Safety first.</div>",
         unsafe_allow_html=True,
     )
 
