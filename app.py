@@ -3,8 +3,7 @@ Production RAG chatbot for construction rules and regulations.
 Streamlit app: scenario in, applicable rules out (strictly from PDF context).
 """
 import os
-import re
-from operator import itemgetter
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -29,6 +28,21 @@ def get_env(name: str) -> str:
     return val.strip()
 
 
+def log_feedback(kind: str, question: str, answer: str) -> None:
+    """
+    Append simple feedback to a local log file for later analysis.
+    kind: 'helpful' or 'needs_improvement'
+    """
+    try:
+        root = Path(__file__).resolve().parent
+        log_path = root / "feedback.log"
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"{kind.upper()} | Q: {question.replace(os.linesep, ' ')} | A: {answer.replace(os.linesep, ' ') }\n")
+    except Exception:
+        # Feedback should never break the app; fail silently.
+        pass
+
+
 @st.cache_resource
 def get_vectorstore():
     """Cached Pinecone vector store and embeddings."""
@@ -51,133 +65,42 @@ def get_llm():
 
 
 # ---------------------------------------------------------------------------
-# System prompt: strict grounding, no hallucination, Roman Urdu + English
+# System prompt: strict grounding, no hallucination, English only
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """You are a construction rules assistant. You answer ONLY using the provided PDF context.
 
 RULES (CRITICAL):
-- Base every answer STRICTLY on the "Relevant PDF context" below. Do not use any other knowledge.
-- If the context does not contain a rule that applies to the user's scenario, you MUST respond with exactly:
-  - If response_language == "English": "This scenario’s relevant rule is not present in this PDF."
-  - Otherwise (Roman Urdu): "Is scenario ka relevant rule is PDF main mojood nahi."
+- Base every answer STRICTLY on the \"Relevant PDF context\" below. Do not use any other knowledge.
+- If the context does not contain a rule that applies to the user's scenario, you MUST respond with exactly: \"This scenario’s relevant rule is not present in this PDF.\"
 - Do NOT guess, approximate, or invent any rule. If in doubt, say the rule is not found.
 - Prefer precision over length. Be clear and actionable.
-- Accept input in Roman Urdu, English, or mix. Understand the scenario (e.g. road-facing plot, residential/commercial, location) before answering.
+- All answers must be in clear, professional English suitable for construction engineers, site supervisors, and workers.
 
-LANGUAGE (MANDATORY):
-- You MUST write the full response in {response_language}.
-- Keep technical terms as-is when needed (e.g., \"setback\", \"signage\", \"right-of-way\").
+OUTPUT FORMAT (follow exactly):
 
-OUTPUT FORMAT (follow exactly, headings in the same language):
-- If response_language == "English":
-  1. Understanding the Scenario
-     - What the user is planning/building
-     - Location context (road-facing, residential, commercial)
+1. Understanding the Scenario
+   - What the user is planning/building
+   - Location context (road-facing, residential, commercial)
 
-  2. Applicable Rules
-     - Bullet points
-     - Exact rule explanation from the context only
-     - Only what applies to the scenario
+2. Applicable Rules
+   - Bullet points
+   - Exact rule explanation from the context only
+   - Only what applies to the scenario
 
-  3. Instructions for Workers
-     - Simple actionable steps
-     - On-site friendly language
+3. Instructions for Workers
+   - Simple actionable steps
+   - On-site friendly language
 
-  4. Source Reference
-     - Page number(s) from PDF
-
-- Otherwise (Roman Urdu):
-  1. Scenario Samajhna
-     - User ne kya banana / karna hai
-     - Location context (road-facing, residential, commercial)
-
-  2. Laagu Honay Wale Rules
-     - Bullet points
-     - Exact rule explanation from the context only
-     - Only what applies to the scenario
-
-  3. Workers ke liye Instructions
-     - Simple actionable steps
-     - On-site friendly language
-
-  4. Source Reference
-     - Page number(s) from PDF
+4. Source Reference
+   - Page number(s) from PDF
 
 Relevant PDF context:
 {context}
 """
 
-USER_PROMPT = """response_language: {response_language}
-
-User scenario / question:
+USER_PROMPT = """User scenario / question:
 {question}
 """
-
-
-def detect_response_language(text: str) -> str:
-    """
-    Heuristic language routing:
-    - Roman Urdu and English both use Latin script, so we use a small keyword scoring.
-    - Returns: "English" or "Roman Urdu"
-    """
-    t = re.sub(r"[^a-zA-Z\s]", " ", (text or "").lower())
-    words = [w for w in t.split() if w]
-    if not words:
-        return "Roman Urdu"
-
-    english_markers = {
-        "what",
-        "which",
-        "when",
-        "where",
-        "why",
-        "how",
-        "setback",
-        "signage",
-        "regulation",
-        "regulations",
-        "applicable",
-        "required",
-        "permit",
-        "residential",
-        "commercial",
-        "building",
-        "constructing",
-        "road",
-        "plot",
-        "main",
-        "please",
-        "explain",
-    }
-    roman_urdu_markers = {
-        "kya",
-        "ka",
-        "ki",
-        "ke",
-        "mein",
-        "main",
-        "par",
-        "hain",
-        "hai",
-        "bana",
-        "banae",
-        "banana",
-        "raha",
-        "rahi",
-        "hoon",
-        "hoga",
-        "honay",
-        "laagu",
-        "workers",
-    }
-
-    eng_score = sum(1 for w in words if w in english_markers)
-    ur_score = sum(1 for w in words if w in roman_urdu_markers)
-
-    # If the question is clearly English, prefer English.
-    if eng_score > ur_score + 1:
-        return "English"
-    return "Roman Urdu"
 
 
 def format_docs(docs):
@@ -193,13 +116,8 @@ def build_chain(vectorstore, llm, k: int = 5):
         ("system", SYSTEM_PROMPT),
         ("human", USER_PROMPT),
     ])
-    # IMPORTANT: the retriever must receive only the question string, not the full input dict.
     chain = (
-        {
-            "context": itemgetter("question") | retriever | format_docs,
-            "question": itemgetter("question"),
-            "response_language": itemgetter("response_language"),
-        }
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
         | prompt
         | llm
         | StrOutputParser()
@@ -218,46 +136,176 @@ def main():
         initial_sidebar_state="collapsed",
     )
 
-    # Global styles (clean, professional, construction-inspired)
+    # Global styles (premium, 3D-style construction dashboard, similar to SaaS OS layout)
     st.markdown(
         """
         <style>
-          .block-container { padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1200px; }
+          /* Full app background: soft multi-color gradient, independent of theme */
+          body,
+          [data-testid="stAppViewContainer"] {
+            background:
+              radial-gradient(circle at top left, #1d1258 0, #0f172a 38%, #020617 60%),
+              radial-gradient(circle at bottom right, #172554 0, #020617 55%, #020617 100%) !important;
+            color: #e5e7eb;
+          }
+          [data-testid="stHeader"] {
+            background: transparent !important;
+          }
+
+          .block-container {
+            padding-top: 1.25rem;
+            padding-bottom: 2rem;
+            max-width: 1200px;
+          }
+
+          /* Hero: 3D, glass + neon edge, theme-agnostic */
           .crb-hero {
-            border: 1px solid rgba(255,255,255,0.08);
-            background: radial-gradient(1200px 500px at 10% 10%, rgba(255,180,0,0.20), rgba(0,0,0,0.0)),
-                        linear-gradient(135deg, rgba(20,24,40,0.95), rgba(12,12,16,0.95));
-            border-radius: 18px;
-            padding: 1.25rem 1.25rem;
-            margin-bottom: 1rem;
+            position: relative;
+            border-radius: 20px;
+            padding: 1.1rem 1.4rem 0.9rem 1.4rem;
+            margin-bottom: 1.25rem;
+            background:
+              radial-gradient(140% 160% at 0% 0%, rgba(251, 191, 36, 0.35), transparent 55%),
+              radial-gradient(120% 160% at 100% 0%, rgba(56, 189, 248, 0.32), transparent 60%),
+              linear-gradient(135deg, #020617, #020617 20%, #020617 45%, #020617 80%, #020617);
+            box-shadow:
+              0 28px 80px rgba(15, 23, 42, 0.85),
+              0 0 0 1px rgba(148, 163, 184, 0.32),
+              inset 0 1px 0 rgba(248, 250, 252, 0.16);
+            overflow: hidden;
+            color: #e5e7eb;
           }
-          .crb-title { margin: 0; font-weight: 750; letter-spacing: -0.02em; }
-          .crb-subtitle { margin: 0.35rem 0 0 0; color: rgba(255,255,255,0.72); }
-          .crb-badge {
-            display: inline-flex; gap: .5rem; align-items: center;
-            padding: .25rem .6rem; border-radius: 999px;
-            border: 1px solid rgba(255,255,255,0.12);
-            background: rgba(255,255,255,0.04);
-            font-size: .85rem; color: rgba(255,255,255,0.80);
+          .crb-hero::before {
+            content: "";
+            position: absolute;
+            inset: -40%;
+            background:
+              radial-gradient(circle at 0% 0%, rgba(251, 191, 36, 0.22), transparent 55%),
+              radial-gradient(circle at 100% 0%, rgba(56, 189, 248, 0.20), transparent 55%);
+            opacity: 0.9;
+            mix-blend-mode: screen;
+            pointer-events: none;
           }
+          .crb-hero-inner {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 0.7rem;
+          }
+          .crb-top-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+          }
+          .crb-logo-wrap {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+          }
+          .crb-logo-circle {
+            width: 34px;
+            height: 34px;
+            border-radius: 999px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle at 30% 0%, #facc15, #f97316);
+            box-shadow:
+              0 10px 25px rgba(15, 23, 42, 0.85),
+              0 0 0 1px rgba(248, 250, 252, 0.4);
+          }
+          .crb-app-name {
+            font-weight: 750;
+            letter-spacing: -0.03em;
+            font-size: 1.15rem;
+            color: #f9fafb;
+          }
+          .crb-app-sub {
+            font-size: 0.8rem;
+            color: rgba(226, 232, 240, 0.78);
+          }
+          .crb-user-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.35rem 0.7rem;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(148, 163, 184, 0.7);
+            font-size: 0.75rem;
+            color: rgba(226, 232, 240, 0.9);
+          }
+          .crb-user-role {
+            font-size: 0.7rem;
+            padding: 0.12rem 0.45rem;
+            border-radius: 999px;
+            background: rgba(34, 197, 94, 0.16);
+            color: rgba(190, 242, 100, 0.95);
+            border: 1px solid rgba(74, 222, 128, 0.5);
+          }
+
+
+          /* Cards: floating, subtle 3D */
           .crb-card {
-            border: 1px solid rgba(255,255,255,0.08);
-            background: rgba(255,255,255,0.03);
-            border-radius: 14px;
-            padding: 1rem 1rem;
+            border-radius: 18px;
+            padding: 1.1rem 1.2rem;
+            background:
+              linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.88));
+            box-shadow:
+              0 18px 45px rgba(15, 23, 42, 0.85),
+              0 0 0 1px rgba(148, 163, 184, 0.35);
+            color: #e5e7eb;
           }
-          .crb-muted { color: rgba(255,255,255,0.65); }
+          .crb-card h4, .crb-card h3, .crb-card h2 {
+            margin-top: 0;
+          }
+          .crb-muted {
+            color: rgba(148, 163, 184, 0.95);
+          }
+
+          /* Make Streamlit text area + button blend with the 3D card */
+          .crb-card textarea {
+            border-radius: 14px !important;
+            border: 1px solid rgba(148, 163, 184, 0.5) !important;
+            background: radial-gradient(circle at 0 0, rgba(51, 65, 85, 0.4), rgba(15, 23, 42, 0.95)) !important;
+            color: #e5e7eb !important;
+            box-shadow:
+              inset 0 1px 0 rgba(248, 250, 252, 0.08),
+              0 14px 30px rgba(15, 23, 42, 0.75);
+          }
+          .crb-card textarea:focus {
+            border-color: rgba(250, 204, 21, 0.9) !important;
+            box-shadow:
+              0 0 0 1px rgba(250, 204, 21, 0.9),
+              0 18px 40px rgba(15, 23, 42, 0.9),
+              inset 0 1px 0 rgba(248, 250, 252, 0.12);
+          }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    # Construction-themed header
+    # App shell header (inspired by OS-style dashboards)
     st.markdown(
         """
         <div class="crb-hero">
-          <div class="crb-badge">🏗️ <span>RAG • PDF-grounded • Pinecone</span></div>
-          <h1 class="crb-title">Construction Rules Assistant</h1>
+          <div class="crb-hero-inner">
+            <div class="crb-top-row">
+              <div class="crb-logo-wrap">
+                <div class="crb-logo-circle">🏗️</div>
+                <div>
+                  <div class="crb-app-name">Construction Rules OS</div>
+                  <div class="crb-app-sub">Daily co-pilot for code-compliant site decisions</div>
+                </div>
+              </div>
+              <div class="crb-user-pill">
+                <span>Supervisor Mode</span>
+                <span class="crb-user-role">Live</span>
+              </div>
+            </div>
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -267,60 +315,71 @@ def main():
     try:
         vectorstore = get_vectorstore()
     except Exception as e:
-        st.error(f"Vector store load nahi ho saka. Pehle `python ingest.py` chalaen. Error: {e}")
+        st.error(f"Vector store could not be loaded. Please run `python ingest.py` first. Error: {e}")
         st.stop()
 
     llm = get_llm()
 
-    # Input area + tips
+    # Main layout: chat on the left, \"today\" panel on the right
     left, right = st.columns([2, 1], gap="large")
     with left:
         st.markdown("<div class='crb-card'>", unsafe_allow_html=True)
+        st.markdown("#### Chat with your rules assistant")
+        st.markdown(
+            "<p class='crb-muted'>Describe the construction scenario and location. The assistant will respond with only the rules that apply.</p>",
+            unsafe_allow_html=True,
+        )
         scenario = st.text_area(
-            "🧱 Scenario / Question (Roman Urdu / English)",
+            "🧱 Scenario / Question",
             height=140,
-            placeholder="Example (English): I am constructing a residential building on a main road-facing plot. What are the applicable setback and signage regulations?\nExample (Roman Urdu): Main road-facing plot par residential building bana raha hoon. Setback aur signage ke kya rules hain?",
+            placeholder="Example: I am constructing a residential building on a main road-facing plot. What are the applicable setback and signage regulations?",
             help="Write what you are building, where it is located, and what decision you need on-site.",
         )
         submit = st.button("📌 Get Applicable Rules", type="primary", use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
     with right:
         st.markdown("<div class='crb-card'>", unsafe_allow_html=True)
-        st.markdown("#### 🦺 On-site Tips")
+        st.markdown("#### 📅 Today's checks")
         st.markdown(
             """
-            - Be specific: road type, area (residential/commercial), work type.
-            - Ask one scenario at a time for best retrieval.
-            - If rule is not in PDF, the bot will say so (no hallucination).
+            - Capture one scenario per query for precise rules.
+            - Mention road type, land use (residential/commercial), and any special conditions.
+            - If the PDF has no matching rule, the assistant will say so instead of guessing.
             """,
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
     if submit:
         if not (scenario and scenario.strip()):
-            st.warning("Please write your scenario / sawal first.")
+            st.warning("Please write your scenario first.")
             return
 
-        response_language = detect_response_language(scenario.strip())
         chain = build_chain(vectorstore, llm)
 
         with st.spinner("Searching rules from PDF context..."):
             try:
-                answer = chain.invoke({"question": scenario.strip(), "response_language": response_language})
+                answer = chain.invoke(scenario.strip())
             except Exception as e:
                 st.error(f"Error: {e}")
                 return
-        if response_language == "English":
-            st.success("Done. Retrieved from PDF context.")
-            title = "### 🧾 Answer"
-        else:
-            st.success("Rules mil gaye.")
-            title = "### 🧾 Jawab"
+        st.success("Done. Retrieved from PDF context.")
+        title = "### 🧾 Answer"
         # Formatted sections
         st.markdown("---")
         st.markdown(title)
         st.markdown(answer)
         st.markdown("---")
+
+        # Lightweight feedback buttons for continuous improvement
+        fb_col1, fb_col2 = st.columns(2)
+        with fb_col1:
+            if st.button("✅ This answer was helpful", use_container_width=True):
+                log_feedback("helpful", scenario.strip(), answer)
+                st.toast("Thanks, marked as helpful.", icon="✅")
+        with fb_col2:
+            if st.button("⚠️ Needs improvement", use_container_width=True):
+                log_feedback("needs_improvement", scenario.strip(), answer)
+                st.toast("Noted. We will review this scenario.", icon="⚠️")
 
     st.markdown(
         "<div style='text-align: center; color: #888; font-size: 0.85rem;'>Answers are based only on uploaded PDF rules. Safety first.</div>",
