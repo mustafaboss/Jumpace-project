@@ -332,7 +332,7 @@ def main():
         scenario = st.text_area(
             "🧱 Scenario / Question",
             height=140,
-            placeholder="Example: I am constructing a residential building on a main road-facing plot. What are the applicable setback and signage regulations?",
+            placeholder="Type here",
             help="Write what you are building, where it is located, and what decision you need on-site.",
         )
         submit = st.button("📌 Get Applicable Rules", type="primary", use_container_width=True)
