@@ -339,7 +339,7 @@ def main():
         st.markdown("</div>", unsafe_allow_html=True)
     with right:
         st.markdown("<div class='crb-card'>", unsafe_allow_html=True)
-        st.markdown("#### 📅 Today's checks")
+        st.markdown("#### 📘 MUTCD checks")
         st.markdown(
             """
             - Capture one scenario per query for precise rules.
